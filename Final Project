@@ -1,0 +1,166 @@
+ library(GEOquery)
+
+GDS1688<- getGEO("GDS1688")
+annot <- GDS1688@dataTable@columns[,-3]
+annot1 <- rep(c("NSCA", "SCC", "SQCC"), times=c(10, 10, 9))
+annot <- cbind(annot, annot1)
+annot
+GDS1688
+GSE4127 <- getGEO("GSE4127")
+GSE4127$GSE4127_series_matrix.txt.gz
+lung <- exprs(GSE4127$GSE4127_series_matrix.txt.gz)
+
+
+colnames(lung)[1:10] <- paste0(colnames(lung)[1:10], "_NSCA")
+colnames(lung)[11:20] <- paste0(colnames(lung)[11:20], "_SCC")
+colnames(lung)[21:29] <- paste0(colnames(lung)[21:29], "_SQCC")
+colnames(lung)
+
+
+library(ggplot2)
+lung.cor <- cor(lung)
+par(mfrow = c(1,1))
+#correlation plot
+heatmap(lung.cor, main = "Correlation plot of Lung Cancer data", symm = TRUE, xlab = NULL, ylab = NULL)
+legend("topright", legend= c("Low correlation", "High correlation"), fill = colorRampPalette(c("orange", "red"))(2))
+
+# average correlation plot
+lung.avg <- apply(lung.cor, 1, mean)
+plot(c(1, length(lung.avg)), range(lung.avg), type = "n", xlab = "", ylab = "Average", main = "Avg correlation of the Lung Cancer data", axes = F)
+points(lung.avg, bg = "green", col = 1, pch = 20, cex = 1.25)
+axis(1,at=c(1:length(lung.avg)), labels = dimnames(lung)[[2]], las = 2, cex.lab = 0.4, cex.axis = 0.6)
+axis(2)
+
+# hierarchical clustering dendrogram
+lung.t <- t(lung)
+lung.dist <- dist(lung.t, method = "euclidean")
+hc <- hclust(lung.dist, method = "complete")
+lung.clust <- as.dendrogram(hc)
+plot(lung.clust, main = "Hierarchical Clustering Dendogram", cex = 0.4, labels=names(lung.t))
+
+#cv vs mean plot
+lung.mean <- apply(log2(lung), 2, mean)
+lung.sd <- sqrt(apply(log2(lung), 2, var))
+lung.cv <- lung.sd/lung.mean
+plot(lung.mean, lung.cv, main = "Normal/Mutauin data CV vs. Mean", xlab = "Mean", ylab = "CV", col = "blue", cex = 1.5, type = "n")
+points(lung.mean, lung.cv, bg ="lightblue", col = 1, pch = 20)
+text(lung.mean, lung.cv, label= dimnames(lung)[[2]], pos=1, cex=0.5)
+
+library(impute)
+#the outlier would be GSM94320_SCC, GSM94331_SQCC, GSM94324_SQCC
+outliers <- c("GSM94320_SCC", "GSM94331_SQCC", "GSM94324_SQCC")
+lung.nout <- lung[,!colnames(lung) %in% outliers] #removed the outlier
+#repeating the analysis to observe the removal of the outlier
+lung.nout.cor <- cor(lung.nout)
+heatmap(lung.nout.cor, main = "Correlation plot of Normal & Mutated data (without outlier)", symm = TRUE)
+lung.nout.t <- t(lung.nout)
+lung.nout.dist <- dist(lung.nout.t, method = "euclidean")
+hc.nout <- hclust(lung.nout.dist, method = "complete")
+plot(as.dendrogram(hc.nout), main = "Hierarchical Clustering Dendogram (without outlier)", cex = 0.4)
+
+#filter out genes
+lung.log <- log2(lung.nout)
+expr.mean <- rowMeans(lung.nout) # mean expression level for each gene/row
+exp.threshold <- quantile(expr.mean, probs = 0.30) #threshold of lower than 25% is 5.255659, 30% is 72.82846
+high.expr <- expr.mean > exp.threshold
+lung.filter <- lung.log[high.expr,] #out of 22,283 genes, 5,571 was filtered out leaving 16,712(15598 of 30%) genes with high expression
+dim(lung.filter) # the result is the same even when I used lung.nout
+
+
+#statistical test, since i have 3 set/conditions
+types <- colnames(lung.filter) 
+NSCA.lung <- types[1:10]
+SCC.lung <- types[11:19]
+SQCC.lung <- types[20:26]
+NSCA.lung
+
+
+aov.all.genes <- function(x,s1,s2,s3) {
+  x1 <- as.numeric(x[s1])
+  x2 <- as.numeric(x[s2])
+  x3 <- as.numeric(x[s3])
+  fac <- c(rep("A",length(x1)), rep("B",length(x2)), rep("C",length(x3)))
+  a.dat <- data.frame(as.factor(fac),c(x1,x2,x3))
+  names(a.dat) <- c("factor","express")
+  p.out <- summary(aov(express~factor, a.dat))[[1]][1,5]
+  #p.out <- summary(aov(express~factor, a.dat))[[1]][1,4]	# use to get F-statistic
+  return(p.out)
+}
+aov.run <- apply(lung.filter,1, aov.all.genes,s1=NSCA.lung,s2=SCC.lung,s3=SQCC.lung)
+aov.run
+
+rawpg <- apply(lung.filter,1,aov.all.genes,s1=NSCA.lung,s2=SCC.lung,s3=SQCC.lung)
+
+hist(aov.run,col="lightblue",xlab="p-values",main="P-value dist’n between the 3 types",cex.main=0.9)
+abline(v=.05,col=2,lwd=2)
+aov.05 <- sum(aov.run<0.05)
+# aov.05 = 3170
+con1_alpha <- 0.05 / length(aov.run)
+# con1_alpha =  3.205539e-06
+aov_con_alpha <- sum(aov.run < con1_alpha)
+#aov_con_alpha = 2
+aov_con_alpha
+
+aov.run <- apply(lung.filter,1, aov.all.genes,s1=NSCA.lung,s2=SCC.lung,s3=SQCC.lung)
+rawpg <- apply(lung.filter,1,aov.all.genes,s1=NSCA.lung,s2=SCC.lung,s3=SQCC.lung)
+
+#ADJUSTING for multiplicity using the pv values and retained genes
+library(multtest)
+adjusted <- p.adjust(aov.run, method= "bonferroni")
+sig.genes <- rownames(lung.filter)[which(adjusted< 0.1)]
+#sig.genes = 6,  "203831_at" "205707_at" "205967_at" "218493_at" "219359_at" "36004_at" 
+hist(adjusted[adjusted< 0.1], main = "Histogram of adjusted p-values of significant genes", xlab = "Adjusted P-value", ylab = "Frequency", col = "lightgreen")
+
+#hierarchical clustering
+#for all lung.filter dataset
+distlung <- dist(t(lung.filter), method = "manhattan")
+hc.lung <- hclust(distlung, method = "median")
+hc.lung <- as.dendrogram(hc.lung)
+plot(hc.lung, main = "Hierarchical Clustering of Lung Samples", cex =0.75)
+heatmap(as.matrix(t(lung.filter)),labCol=types,main='2D HCA Lung Cancer data',cex.main=0.7)
+
+#for sig genes
+lung.filt.sig <- lung.filter[sig.gene,]
+lung.filt.sig.cor <- cor(lung.filt.sig)
+hc.sig <- hclust(dist(1 - lung.filt.sig.cor), method = "median")
+dendrogram_sig <- as.dendrogram(hc.sig)
+plot(dendrogram_sig, main = "Hierarchical Clustering Dendogram for Significant Genes", cex = 0.4)
+heatmap(as.matrix(t(lung.filt.sig)),labCol=types,main='2D HCA significant Lung Cancer data',cex.main=0.7)
+
+
+#LDA
+library(MASS)
+types1
+types1 <- types
+types1[grep("NSCA", types1)]<- rep("N", length(class[grep("NSCA", types1)]))
+types1[grep("SCC", types1)]<- rep("S", length(class[grep("SCC", types1)]))
+types1[grep("SQCC", types1)]<- rep("Q", length(class[grep("SQCC", types)]))
+dat1 <- data.frame(types1, t(lung.filter))
+
+train.set <- dat1[c(1:6, 11:16, 20:23),]
+test.set <- dat1[c(7:10, 17:19, 24:26),]
+ann <- test.set[,1]
+test.set <- test.set[,-1]
+
+lda.train <- lda(types1 ~ ., data= train.set)
+out.all <- predict(lda.train, test.set)
+table(out.all$class, ann)
+N Q S
+N 4 1 1
+Q 0 0 1
+S 0 2 1
+
+types1.col <- c("N"= "red", "Q" = "purple", "S"= "green")
+plot.col <- types1.col[ann]
+plot(out.all$x[,1], out.all$x[,2], col=plot.col, pch=19, main = "Disciminant scores on the 2 discriminant variables", xlab = "LD1", ylab = "LD2")
+legend("topright", legend = names(types1.col), col = types1.col, pch = 19)
+
+
+lda.loading <- lda.train$scaling
+top_5_genes <- rownames(lda.loading)[order(abs(lda.loading), decreasing = T)][1:5]
+lda.loading[order(abs(lda.loading), decreasing = T)]
+
+top_5_genes
+# "X211750_x_at" "X213646_x_at" "X216164_at"   "X200775_s_at" "X200014_s_at"
+
+
